@@ -3,7 +3,7 @@
 // @@
 // @ Author       : Eacher
 // @ Date         : 2023-02-20 08:45:05
-// @ LastEditTime : 2023-02-20 09:06:45
+// @ LastEditTime : 2023-02-20 09:38:14
 // @ LastEditors  : Eacher
 // @ --------------------------------------------------------------------------------<
 // @ Description  : Linux inotify 文件监听功能
@@ -115,7 +115,7 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 	defer w.mutex.Unlock()
 	if w.bufferItem == 0 {
 		if w.closes {
-			return WatchSingle{}, errors.New("The monitored directory or file has been deleted or renamed")
+			return WatchSingle{}, errors.New("The Watcher is closes")
 		}
 		w.wait = true
 		go w.epollWait()
@@ -124,7 +124,7 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 	}
 	offset := uint32(syscall.SizeofInotifyEvent)
 	if offset > w.bufferItem {
-		return WatchSingle{}, errors.New("The monitored directory or file has been deleted or renamed")
+		return WatchSingle{}, errors.New("The event bufferItem Cross Lines")
 	}
 	event := (*syscall.InotifyEvent)(unsafe.Pointer(&w.eventBuffer[0]))
 	ws, ok := w.watchMap[uint32(event.Wd)]
@@ -145,14 +145,16 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 func (w *Watcher) epollWait() {
 	eventSlice := make([]syscall.EpollEvent, 3)
 	n, err := syscall.EpollWait(w.epollFD, eventSlice, -1)
-	if err != nil || n == -1 {
+	if n == -1 {
 		w.mutex.Lock()
-		w.closes = true
+		if err != syscall.EINTR {
+			w.closes = true
+			syscall.Close(w.inotifyFD)
+		}
 		if w.wait {
 			w.cond.Signal()
 		}
 		w.mutex.Unlock()
-		syscall.Close(w.inotifyFD)
 		return
 	}
 	var wait bool
