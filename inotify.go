@@ -3,12 +3,12 @@
 // @@
 // @ Author       : Eacher
 // @ Date         : 2023-02-20 08:45:05
-// @ LastEditTime : 2023-02-20 09:38:14
+// @ LastEditTime : 2023-02-22 08:06:21
 // @ LastEditors  : Eacher
 // @ --------------------------------------------------------------------------------<
 // @ Description  : Linux inotify 文件监听功能
 // @ --------------------------------------------------------------------------------<
-// @ FilePath     : /goinotify/inotify/inotify.go
+// @ FilePath     : /inotify/inotify.go
 // @@
 package inotify
 
