@@ -3,7 +3,7 @@
 // @@
 // @ Author       : Eacher
 // @ Date         : 2023-02-20 08:45:05
-// @ LastEditTime : 2023-02-22 08:06:21
+// @ LastEditTime : 2023-02-22 15:20:28
 // @ LastEditors  : Eacher
 // @ --------------------------------------------------------------------------------<
 // @ Description  : Linux inotify 文件监听功能
@@ -21,12 +21,15 @@ import (
 	"errors"
 )
 
+// 防止数组溢出
+const MAX_ITEM = syscall.SizeofInotifyEvent*100
+
 type Watcher struct {
 	inotifyFD 	int
 	epollFD 	int
 
 	watchMap 	map[uint32]*WatchSingle
-	eventBuffer [syscall.SizeofInotifyEvent*4096]byte
+	eventBuffer [syscall.SizeofInotifyEvent*105]byte
 	bufferItem 	uint32
 
 	mutex   	sync.Mutex
@@ -122,30 +125,22 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 		w.cond.Wait()
 		w.wait = false
 	}
-	offset := uint32(syscall.SizeofInotifyEvent)
-	if offset > w.bufferItem {
+
+	if uint32(syscall.SizeofInotifyEvent) > w.bufferItem {
 		return WatchSingle{}, errors.New("The event bufferItem Cross Lines")
 	}
-	event := (*syscall.InotifyEvent)(unsafe.Pointer(&w.eventBuffer[0]))
-	ws, ok := w.watchMap[uint32(event.Wd)]
-	if !ok {
-		return WatchSingle{}, errors.New("The monitored directory or file has been deleted or renamed")
+
+	if ws := w.forwardBuffer(); ws != nil {
+		return *ws, nil
 	}
-	ws.Mask = event.Mask
-	ws.FileName = ws.path
-	if 0 < event.Len {
-		ws.FileName += string(w.eventBuffer[offset:offset+event.Len])
-		offset += event.Len
-	}
-	copy(w.eventBuffer[0:], w.eventBuffer[offset:])
-	w.bufferItem -= offset
-	return *ws, nil
+	return WatchSingle{}, errors.New("The monitored directory or file has been deleted or renamed") 
 }
 
 func (w *Watcher) epollWait() {
 	eventSlice := make([]syscall.EpollEvent, 3)
 	n, err := syscall.EpollWait(w.epollFD, eventSlice, -1)
-	if n == -1 {
+	// 不排除系统返回大于3的长度
+	if n == -1 || n > 3 {
 		w.mutex.Lock()
 		if err != syscall.EINTR {
 			w.closes = true
@@ -171,6 +166,9 @@ func (w *Watcher) epollWait() {
 			}
 			w.mutex.Lock()
 			wait = w.wait
+			if w.bufferItem > uint32(MAX_ITEM) {
+				w.forwardBuffer()
+			}
 			if n, err := syscall.Read(w.inotifyFD, w.eventBuffer[w.bufferItem:]); err == nil {
 				w.bufferItem += uint32(n)
 			}
@@ -182,6 +180,27 @@ func (w *Watcher) epollWait() {
 	if wait {
 		w.cond.Signal()
 	}
+}
+
+func (w *Watcher) forwardBuffer() *WatchSingle {
+	offset, event := uint32(syscall.SizeofInotifyEvent), (*syscall.InotifyEvent)(unsafe.Pointer(&w.eventBuffer[0]))
+	
+	if ws, ok := w.watchMap[uint32(event.Wd)]; ok {
+		ws.Mask = event.Mask
+		ws.FileName = ws.path
+		if 0 < event.Len {
+			ws.FileName += string(w.eventBuffer[offset:offset+event.Len])
+			offset += event.Len
+		}
+		copy(w.eventBuffer[0:], w.eventBuffer[offset:])
+		w.bufferItem -= offset
+		return ws
+	}
+	// TODO 如果监视者已经移除仍有事件产生，这是不应该出现的情况，暂时清空事件BUFFER
+	copy(w.eventBuffer[0:], w.eventBuffer[w.bufferItem:])
+	w.bufferItem = 0
+	fmt.Println("Error Watcher EventBuffer")
+	return nil
 }
 
 func (w *Watcher) Close() {
