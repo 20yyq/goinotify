@@ -3,7 +3,7 @@
 // @@
 // @ Author       : Eacher
 // @ Date         : 2023-02-20 08:45:05
-// @ LastEditTime : 2023-02-23 08:12:56
+// @ LastEditTime : 2023-02-23 13:34:59
 // @ LastEditors  : Eacher
 // @ --------------------------------------------------------------------------------<
 // @ Description  : Linux inotify 文件监听功能
@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"fmt"
 	"errors"
+	"path/filepath"
 )
 
 // 防止数组溢出
@@ -98,11 +99,18 @@ func (ws WatchSingle) GetEventName() string {
 }
 
 func (w *Watcher) AddWatch(path string, flags uint32) error {
+	var err error
+    if path, err = filepath.Abs(path); err != nil {
+    	return err
+    }
+    info, _ := os.Stat(path)
+    if info == nil {
+    	return errors.New("File or Dir not")
+    }
 	wd, err := syscall.InotifyAddWatch(w.inotifyFD, path, flags|syscall.IN_DONT_FOLLOW|syscall.IN_MASK_ADD)
 	if err == nil {
 		ws, ok := w.watchMap[uint32(wd)]
 		if !ok {
-			info, _ := os.Stat(path)
 			ws = &WatchSingle{watch: w, path: path, isDir: info.IsDir(), watchId: uint32(wd), flags: flags}
 			if ws.isDir {
 				ws.path += string(os.PathSeparator)
@@ -188,6 +196,9 @@ func (w *Watcher) epollWait() {
 	}
 	w.mutex.Lock()
 	w.epollRun = false
+	if w.wait {
+		w.cond.Signal()
+	}
 	w.mutex.Unlock()
 }
 
