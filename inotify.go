@@ -3,7 +3,7 @@
 // @@
 // @ Author       : Eacher
 // @ Date         : 2023-02-20 08:45:05
-// @ LastEditTime : 2023-02-22 15:20:28
+// @ LastEditTime : 2023-02-23 08:12:56
 // @ LastEditors  : Eacher
 // @ --------------------------------------------------------------------------------<
 // @ Description  : Linux inotify 文件监听功能
@@ -22,19 +22,20 @@ import (
 )
 
 // 防止数组溢出
-const MAX_ITEM = syscall.SizeofInotifyEvent*100
+const MAX_ITEM = syscall.SizeofInotifyEvent*20
 
 type Watcher struct {
 	inotifyFD 	int
 	epollFD 	int
 
 	watchMap 	map[uint32]*WatchSingle
-	eventBuffer [syscall.SizeofInotifyEvent*105]byte
+	eventBuffer [syscall.SizeofInotifyEvent*25]byte
 	bufferItem 	uint32
 
 	mutex   	sync.Mutex
 	cond   		*sync.Cond
 	wait   		bool
+	epollRun   	bool
 	closes 		bool
 }
 
@@ -97,7 +98,7 @@ func (ws WatchSingle) GetEventName() string {
 }
 
 func (w *Watcher) AddWatch(path string, flags uint32) error {
-	wd, err := syscall.InotifyAddWatch(w.inotifyFD, path, flags|syscall.IN_MASK_ADD)
+	wd, err := syscall.InotifyAddWatch(w.inotifyFD, path, flags|syscall.IN_DONT_FOLLOW|syscall.IN_MASK_ADD)
 	if err == nil {
 		ws, ok := w.watchMap[uint32(wd)]
 		if !ok {
@@ -121,7 +122,9 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 			return WatchSingle{}, errors.New("The Watcher is closes")
 		}
 		w.wait = true
-		go w.epollWait()
+		if !w.epollRun {
+			go w.epollWait()
+		}
 		w.cond.Wait()
 		w.wait = false
 	}
@@ -137,10 +140,13 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 }
 
 func (w *Watcher) epollWait() {
-	eventSlice := make([]syscall.EpollEvent, 3)
+	w.mutex.Lock()
+	w.epollRun = true
+	w.mutex.Unlock()
+	eventSlice := make([]syscall.EpollEvent, 10)
 	n, err := syscall.EpollWait(w.epollFD, eventSlice, -1)
-	// 不排除系统返回大于3的长度
-	if n == -1 || n > 3 {
+	// 不排除系统返回大于10的长度
+	if n == -1 || n > 10 {
 		w.mutex.Lock()
 		if err != syscall.EINTR {
 			w.closes = true
@@ -149,10 +155,11 @@ func (w *Watcher) epollWait() {
 		if w.wait {
 			w.cond.Signal()
 		}
+		w.epollRun = false
 		w.mutex.Unlock()
 		return
 	}
-	var wait bool
+
 	for _, e := range eventSlice[:n] {
 		switch {
 		case e.Events&syscall.EPOLLHUP != 0:
@@ -165,7 +172,9 @@ func (w *Watcher) epollWait() {
 				break
 			}
 			w.mutex.Lock()
-			wait = w.wait
+			if w.wait {
+				w.cond.Signal()
+			}
 			if w.bufferItem > uint32(MAX_ITEM) {
 				w.forwardBuffer()
 			}
@@ -177,9 +186,9 @@ func (w *Watcher) epollWait() {
 			fmt.Println("Events Unknown")
 		}
 	}
-	if wait {
-		w.cond.Signal()
-	}
+	w.mutex.Lock()
+	w.epollRun = false
+	w.mutex.Unlock()
 }
 
 func (w *Watcher) forwardBuffer() *WatchSingle {
