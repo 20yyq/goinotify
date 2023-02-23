@@ -3,7 +3,7 @@
 // @@
 // @ Author       : Eacher
 // @ Date         : 2023-02-20 08:45:05
-// @ LastEditTime : 2023-02-23 13:34:59
+// @ LastEditTime : 2023-02-23 14:24:37
 // @ LastEditors  : Eacher
 // @ --------------------------------------------------------------------------------<
 // @ Description  : Linux inotify 文件监听功能
@@ -36,7 +36,6 @@ type Watcher struct {
 	mutex   	sync.Mutex
 	cond   		*sync.Cond
 	wait   		bool
-	epollRun   	bool
 	closes 		bool
 }
 
@@ -130,9 +129,6 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 			return WatchSingle{}, errors.New("The Watcher is closes")
 		}
 		w.wait = true
-		if !w.epollRun {
-			go w.epollWait()
-		}
 		w.cond.Wait()
 		w.wait = false
 	}
@@ -148,13 +144,10 @@ func (w *Watcher) WaitEvent() (WatchSingle, error) {
 }
 
 func (w *Watcher) epollWait() {
-	w.mutex.Lock()
-	w.epollRun = true
-	w.mutex.Unlock()
-	eventSlice := make([]syscall.EpollEvent, 10)
+	eventSlice := make([]syscall.EpollEvent, 5)
 	n, err := syscall.EpollWait(w.epollFD, eventSlice, -1)
 	// 不排除系统返回大于10的长度
-	if n == -1 || n > 10 {
+	if n == -1 || n > 5 {
 		w.mutex.Lock()
 		if err != syscall.EINTR {
 			w.closes = true
@@ -163,7 +156,9 @@ func (w *Watcher) epollWait() {
 		if w.wait {
 			w.cond.Signal()
 		}
-		w.epollRun = false
+		if !w.closes {
+			go w.epollWait()
+		}
 		w.mutex.Unlock()
 		return
 	}
@@ -194,12 +189,7 @@ func (w *Watcher) epollWait() {
 			fmt.Println("Events Unknown")
 		}
 	}
-	w.mutex.Lock()
-	w.epollRun = false
-	if w.wait {
-		w.cond.Signal()
-	}
-	w.mutex.Unlock()
+	go w.epollWait()
 }
 
 func (w *Watcher) forwardBuffer() *WatchSingle {
@@ -249,5 +239,6 @@ func NewWatcher() (*Watcher, error) {
 		return nil, err
 	}
 	w.cond = sync.NewCond(&w.mutex)
+	go w.epollWait()
 	return w, nil
 }
